@@ -48,9 +48,25 @@ clears, copies). In Kokiri: **20.2 ms of GPU time a frame, 12.1 ms of it between
 back to guest memory** (67 MB a frame over the Ryzen 5 5500's PCIe 3.0). Almost all of it is one 15.2 MB buffer that four
 lighting compute programs write, each in its own submission: copied back whole four times a frame.
 
+**Write-back by changed chunks (on by default, `gpu/vk/vk_wbdiff.cpp`).** Before copying a written range back, a compute
+shader (built with Sirit, no GLSL toolchain needed) goes over it in 4 KB chunks: it fingerprints each chunk of the VRAM
+mirror (two 32-bit sums of a per-word mix that is a bijection of the word for its place, so one changed word always changes
+the fingerprint), compares with the fingerprint of what it last wrote back, and copies only the chunks that changed.
+Reading VRAM is nearly free; only changed chunks cross PCIe. Guest memory ends up as the whole copy left it, except where the
+GPU changed nothing since the last write-back (there a CPU write made in between is no longer overwritten with older bytes).
+Ranges under 64 KB (`RX_VK_WB_DIFF_MIN`) are still copied whole. `RX_VK_WB_DIFF=0`: whole copies as before.
+
+| Kokiri, RX 5700 XT + Ryzen 5 5500 | Before | After |
+|---|---|---|
+| GPU time a frame | 20.2 ms | **14.0 ms** |
+| Write-back | ~10.5 ms | **0.8 ms** |
+| GPU time between passes | 12.1 ms | **2.8 ms** |
+
+Lighting unchanged. ~97% of what is written back goes by changed chunks.
+
 | Option (in `hookshot_env.txt`) | Effect | Status |
 |---|---|---|
-| `RX_VK_WB_SKIP=102f5b0abb0f1e63,78ccf14779ec3efb,7650519f88e59b19,abccf81b45c5eb50,7984161db3e053b5` | Those programs' storage writes stay in VRAM (not copied back). Write-back 67 → 37 MB a frame, GPU time 20.3 → 15–17 ms, real fps ~30 → ~38 | **Opt-in, under test.** Lighting looks right with frame generation on; frame generation can hide single-frame errors |
+| `RX_VK_WB_SKIP=<key prefix,...>` | Those programs' storage writes stay in VRAM (not copied back at all) | Experiment; superseded by the changed-chunk write-back |
 
 ## Building only the renderer
 

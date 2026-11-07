@@ -80,6 +80,11 @@ bool probe_serial();
 void probe_dump_all(const char* why);
 void probe_log(uint64_t frame);
 void memory_end_submission(VkCommandBuffer cmd);
+/// (rx5700xt, vk_wbdiff.cpp) A write-back of [lo, hi) of a pool (byte offsets) by changed 4 KB chunks, recorded into cmd: false
+/// when it cannot be (the caller copies it whole)
+bool writeback_diff(VkCommandBuffer cmd, const void* pool_key, VkBuffer mirror, VkBuffer guest, uint64_t pool_bytes, uint64_t lo,
+                    uint64_t hi);
+void writeback_diff_forget(const void* pool_key);   // (its mirror given back)
 /// The game made a memory pool (gpu address, bytes): imported in the background, before it is used
 /// RX_VK_CHECKPOINTS: the draws the GPU reached, logged once the device is lost (vk_draw.cpp)
 void checkpoints_report();

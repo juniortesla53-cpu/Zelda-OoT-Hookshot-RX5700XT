@@ -1302,6 +1302,7 @@ void retire_pool(std::map<uint64_t, Pool>::iterator it) {
         logf("vk: pool %#llx remade larger (%zu retired)", (unsigned long long)old->lo, retired_pools.size());
 }
 int64_t st_sync_bytes, st_sync_copies, st_wb_bytes, st_mirrors;
+int64_t st_wb_diff_bytes;   // (rx5700xt: of st_wb_bytes, what went by changed chunks, vk_wbdiff.cpp)
 int64_t st_sync_live_pages, st_sync_cap_pages, st_sync_old_pages;   // (mirror syncs' dirty pages: live / this submit's capture / an earlier one's)
 std::unordered_map<uint64_t, int64_t> live_by_pool;
 std::unordered_map<uint64_t, std::pair<int64_t, int>> direct_by_pool;   // (bindings the GPU reads in guest memory: count, state)
@@ -1575,6 +1576,7 @@ void mirror_free(Pool& p) {
     }
     dead_mirrors.push_back({p.mirror, p.mirror_alloc, std::max(mem_rec_value, p.last_value)});
     p.mirror = VK_NULL_HANDLE, p.mirror_alloc = nullptr;
+    writeback_diff_forget(&p);   // (rx5700xt: its fingerprints were of this mirror)
     mirror_bytes -= p.hi - p.lo;
     st_mirror_bytes_freed += p.hi - p.lo;
     st_mirrors_freed++;
@@ -1818,7 +1820,19 @@ void memory_end_submission(VkCommandBuffer cmd) {
                     runs.push_back({w.lo, w.lo, w.hi - w.lo});
             }
             checkpoint_mark(cmd, p->lo, 'b');
-            vkCmdCopyBuffer(cmd, p->mirror, p->buffer, (uint32_t)runs.size(), runs.data());
+            {   // (rx5700xt) big runs by changed 4 KB chunks (vk_wbdiff.cpp): only what the GPU changed crosses the bus. Small ones, and
+                // any the shader cannot take, copied whole as before
+                static const uint64_t diff_min = getenv("RX_VK_WB_DIFF_MIN") ? (uint64_t)atoll(getenv("RX_VK_WB_DIFF_MIN")) : 64 * 1024;
+                std::vector<VkBufferCopy> whole;
+                whole.reserve(runs.size());
+                for (const VkBufferCopy& r : runs) {
+                    if (r.size >= diff_min && writeback_diff(cmd, p, p->mirror, p->buffer, p->hi - p->lo, r.srcOffset, r.srcOffset + r.size))
+                        st_wb_diff_bytes += (int64_t)r.size;
+                    else
+                        whole.push_back(r);
+                }
+                if (!whole.empty()) vkCmdCopyBuffer(cmd, p->mirror, p->buffer, (uint32_t)whole.size(), whole.data());
+            }
             for (const VkBufferCopy& r : runs) st_wb_bytes += (int64_t)r.size;
             {   // (hookshot) RX_VK_LOG_WRITEBACK=1: the pools written back the most, every 600 write-back submissions
                 static const bool log_wb = getenv("RX_VK_LOG_WRITEBACK") != nullptr;
@@ -1848,6 +1862,12 @@ void memory_end_submission(VkCommandBuffer cmd) {
         }
         transfer_barrier(cmd);
         writebacks.clear();
+        static int64_t subs, l_all, l_diff;
+        if (++subs % 600 == 0) {
+            logf("vk: write-back (600 submissions): %.1f MB to write back, %.1f MB of it by changed chunks", (st_wb_bytes - l_all) / 1048576.0,
+                 (st_wb_diff_bytes - l_diff) / 1048576.0);
+            l_all = st_wb_bytes, l_diff = st_wb_diff_bytes;
+        }
     }
     // (what this submission synced is current as of now: the GPU's own writes, stamped while it was recorded, are
     // in the mirror and written back; CPU writes collected at the next submission get a newer generation)
