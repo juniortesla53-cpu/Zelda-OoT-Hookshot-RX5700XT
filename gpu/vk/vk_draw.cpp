@@ -1211,16 +1211,21 @@ VkImageView texture_view_of(uint32_t handle, VkImageViewType want, ViewUse use, 
     const uint32_t version = texture_slot_version((int)(handle & 0xFFFFF));
     const uint64_t dgen = texture_destroy_generation();
     const uint64_t key = (uint64_t)(handle & 0xFFFFF) | (uint64_t)want << 20 | (uint64_t)use << 28 | (uint64_t)storage_as << 32;
-    static int64_t st_hit, st_new, st_ver, st_gen, st_n;
-    if (++st_n % 200000 == 0 && getenv("RX_VK_LOG_HITS"))
-        logf("vk: handle hits %lld, new %lld, slot re-registered %lld, a texture destroyed %lld", (long long)st_hit,
-             (long long)st_new, (long long)st_ver, (long long)st_gen);
-    if (auto it = handle_hits.find(key); it == handle_hits.end()) st_new++;
-    else if (it->second.version != version) st_ver++;
-    else if (it->second.destroy_gen != dgen) st_gen++;
-    else st_hit++;
-    if (auto it = handle_hits.find(key);
-        it != handle_hits.end() && it->second.version == version && it->second.destroy_gen == dgen) {
+    // (rx5700xt: one lookup. The hit statistics took a second find of the same key on every texture of every draw, and a
+    // getenv every 200000 calls; now only with RX_VK_LOG_HITS)
+    static const bool log_hits = getenv("RX_VK_LOG_HITS") != nullptr;
+    auto it = handle_hits.find(key);
+    if (log_hits) {
+        static int64_t st_hit, st_new, st_ver, st_gen, st_n;
+        if (++st_n % 200000 == 0)
+            logf("vk: handle hits %lld, new %lld, slot re-registered %lld, a texture destroyed %lld", (long long)st_hit,
+                 (long long)st_new, (long long)st_ver, (long long)st_gen);
+        if (it == handle_hits.end()) st_new++;
+        else if (it->second.version != version) st_ver++;
+        else if (it->second.destroy_gen != dgen) st_gen++;
+        else st_hit++;
+    }
+    if (it != handle_hits.end() && it->second.version == version && it->second.destroy_gen == dgen) {
         if (it->second.tex && it->second.tex_epoch != texture_epoch()) {   // (once a submission: its age and contents)
             if (!texture_touch_quick(it->second.tex, it->second.sampling)) {
                 ParLock lk;
@@ -4401,7 +4406,8 @@ bool taau_key(uint64_t key) {
     return match;
 }
 bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
-    const char* keys = getenv("RX_VK_TAAU_KEYS") ? getenv("RX_VK_TAAU_KEYS") : "fd029a317a9a4b94";
+    // (rx5700xt: read once, it was a getenv on every dispatch, ~2% of the replay thread)
+    static const char* keys = getenv("RX_VK_TAAU_KEYS") ? getenv("RX_VK_TAAU_KEYS") : "fd029a317a9a4b94";
     if (!taau_key(p.key) || !dev.push_descriptor || !vkCmdPushDescriptorSetKHR || p.stages.empty()) return false;
     const Stage& st = p.stages[0];
     if (st.info.texture_descriptors.empty() || st.info.image_descriptors.empty()) return false;

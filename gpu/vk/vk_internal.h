@@ -202,11 +202,20 @@ inline int64_t prof_now() {
     static const int64_t freq = [] { LARGE_INTEGER f; QueryPerformanceFrequency(&f); return f.QuadPart; }();
     return (int64_t)((double)t.QuadPart * 1e9 / (double)freq);
 }
+// (rx5700xt) The per-phase timers cost two QueryPerformanceCounter calls each, four of them on every draw: ~6% of the
+// replay thread on a Ryzen 5 5500, for numbers that only go to the log. Off unless RX_VK_PROF_SCOPES=1 (the log's
+// "replay time" and "slow frame" lines then read zero).
+inline const bool prof_scopes_on = [] {
+    const char* e = getenv("RX_VK_PROF_SCOPES");
+    return e && atoi(e) != 0;
+}();
 struct ProfScope {
     int phase;
     int64_t t0;
-    explicit ProfScope(int p) : phase(p), t0(prof_now()) {}
-    ~ProfScope() { prof_ns[phase] += prof_now() - t0; }
+    explicit ProfScope(int p) : phase(p), t0(prof_scopes_on ? prof_now() : 0) {}
+    ~ProfScope() {
+        if (prof_scopes_on) prof_ns[phase] += prof_now() - t0;
+    }
 };
 } // namespace mkwvk
 #define PROF(phase) ::mkwvk::ProfScope prof_scope_##phase(::mkwvk::phase)

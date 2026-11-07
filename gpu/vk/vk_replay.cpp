@@ -268,6 +268,41 @@ struct UbUpdate {
 std::deque<UbUpdate> ub_updates;   // in stream order, oldest first
 thread_local uint64_t ub_gen = 0;   // (each recording thread's: its draws' overlays change with what it passed)
 
+// (rx5700xt) Which 4 KB pages the pending uniform updates touch, counted by a hash of the page. ub_read and ub_overlay
+// scanned every pending update (hundreds of them) for each of a draw's reads: ~11% of the replay thread on a Ryzen 5
+// 5500. A read whose pages no update touches now skips the scan; a hash collision only means the scan runs as before.
+constexpr uint32_t kUbPageBuckets = 1u << 14;
+uint32_t ub_page_count[kUbPageBuckets];
+uint32_t ub_wide = 0;   // (updates over 64 pages: every read scans while one is pending)
+inline uint32_t ub_bucket(uint64_t page) {
+    return (uint32_t)((page * 0x9E3779B97F4A7C15ull) >> 50);   // (the top 14 bits)
+}
+void ub_index(const UbUpdate& u, int delta) {
+    const uint64_t n = u.bytes.size();
+    if (!n) return;
+    const uint64_t p0 = u.dst >> 12, p1 = (u.dst + n - 1) >> 12;
+    if (p1 - p0 >= 64) {
+        ub_wide += delta;
+        return;
+    }
+    for (uint64_t pg = p0; pg <= p1; pg++) ub_page_count[ub_bucket(pg)] += delta;
+}
+void ub_index_rebuild() {
+    std::memset(ub_page_count, 0, sizeof ub_page_count);
+    ub_wide = 0;
+    for (const UbUpdate& u : ub_updates) ub_index(u, +1);
+}
+/// False when no pending update can overlap [addr, addr + n)
+bool ub_may_touch(uint64_t addr, uint64_t n) {
+    if (ub_updates.empty() || !n) return false;
+    if (ub_wide) return true;
+    const uint64_t p0 = addr >> 12, p1 = (addr + n - 1) >> 12;
+    if (p1 - p0 >= 64) return true;
+    for (uint64_t pg = p0; pg <= p1; pg++)
+        if (ub_page_count[ub_bucket(pg)]) return true;
+    return false;
+}
+
 // ---- parallel replay (RX_VK_PARALLEL=<threads>): MKW hands over nearly a frame's draws in one command buffer with
 // its present, and waits for the last frame's GPU work before it submits the next: the replay of that command buffer
 // (6-10 ms) was on the frame's critical path. A pass over its ops on the replay thread keeps only the state, and
@@ -297,6 +332,7 @@ bool deferred_late() {   // (RX_VK_DEFERRED_LATE=1: deferred binds read from the
 
 void ub_prune(uint64_t done) {
     while (!ub_updates.empty() && ub_updates.front().value <= done) {
+        ub_index(ub_updates.front(), -1);
         ub_updates.pop_front();
         if (ub_first_of_recording) ub_first_of_recording--;
     }
@@ -308,6 +344,7 @@ uint64_t ub_generation() {
     return ub_gen;
 }
 uint64_t ub_overlay(uint64_t addr, uint64_t n, uint8_t* base, const std::function<uint64_t(uint64_t)>& alloc) {
+    if (!ub_may_touch(addr, n)) return UINT64_MAX;   // (rx5700xt: no pending update on these pages)
     bool any = false;
     const size_t lim = std::min(ub_limit, ub_updates.size());   // (a worker: those before its place in the stream)
     static const bool cur_only = getenv("RX_VK_UB_CUR_ONLY") != nullptr;   // (A/B: this submission's updates only)
@@ -338,6 +375,7 @@ uint64_t ub_overlay(uint64_t addr, uint64_t n, uint8_t* base, const std::functio
 /// the GPU's sake (handles in uniform and storage buffers): the game's memory now may be its next frames'.
 bool ub_read(uint64_t addr, void* dst, uint64_t n) {
     if (!memory_read_as_submitted(addr, dst, n)) return false;
+    if (!ub_may_touch(addr, n)) return true;   // (rx5700xt: no pending update on these pages)
     const size_t lim = std::min(ub_limit, ub_updates.size());
     for (size_t i = 0; i < lim; i++) {
         const UbUpdate& u = ub_updates[i];
@@ -561,6 +599,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             if (u.size && u.size <= avail - sizeof u) {
                 UbUpdate up{rec_value_now, u.dst, std::vector<uint8_t>(a + sizeof u, a + sizeof u + u.size)};
                 ub_updates.push_back(std::move(up));
+                ub_index(ub_updates.back(), +1);
                 ub_gen++;
                 st_ub_updates++;
             }
@@ -1189,6 +1228,7 @@ void bench_frame(int64_t presents) {
     for (int i = 0; i < times; i++) {
         vkDeviceWaitIdle(dev.device);
         ub_updates.resize(ub_before);   // (the last time's uniform updates are written: as if pruned)
+        ub_index_rebuild();
         const auto t0 = std::chrono::steady_clock::now();
         for (const auto& h : frame_submits) bench_replay(h);
         ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
