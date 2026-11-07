@@ -30,6 +30,17 @@ Round 1 — less CPU on the replay thread (no change to shader translation, so e
 | Page index over pending uniform updates: `ub_read` / `ub_overlay` skip the scan when no update touches the pages | `gpu/vk/vk_replay.cpp` | ~11% |
 | One hash lookup per texture handle instead of two (hit statistics only with `RX_VK_LOG_HITS`) | `gpu/vk/vk_draw.cpp` | part of `texture_view_of` |
 
+Driver faults (AMD amdvlk64.dll on RDNA1):
+
+| Change | Where | Why |
+|---|---|---|
+| Programs whose pipeline build faults inside the driver are written to `hookshot_driver_faults.txt` beside the game. Next time they are built **without the driver's optimizer** at their draw (their draws come back), never in the start's precompile; if that faults too, they are not built again | `gpu/vk/vk_draw.cpp` | On an RX 5700 XT the driver faults on the same two programs (`5fa56485a6b07619`, `6eaa646d07ea4e43`) at every start. The fault is caught, but it can leave the driver's locks held: the start's precompile froze at 1128 of 1130 |
+| The precompile's compute pipelines are built through `guarded_compute` like the others | `gpu/vk/vk_draw.cpp` | A fault there took the whole game down |
+
+Result of round 1 in Kokiri (same spot): the replay thread went from ~74% to ~64% busy; frame rate about the same
+(~32 fps). The next limit is the GPU's idle time between passes (17.5 ms of GPU time a frame for 5.7 ms of measured
+passes: full barriers and ~1100 small mirror copies a frame) — round 2.
+
 ## Building only the renderer
 
 Only `hookshot_vk.dll` changes. With a game folder already built by Hookshot Builder, build this branch's renderer

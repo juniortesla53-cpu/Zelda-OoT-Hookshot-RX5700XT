@@ -603,13 +603,68 @@ bool depth_aspect(VkFormat f) {
     return is_depth_format(f) && f != VK_FORMAT_S8_UINT;
 }
 
+// (rx5700xt) Programs whose pipeline build faulted inside the driver, kept in hookshot_driver_faults.txt beside the game. On an
+// RX 5700 XT amdvlk64.dll faults on the same two programs (5fa56485a6b07619, 6eaa646d07ea4e43) at every start. The fault is caught
+// (guarded_*), but it can leave the driver's own locks held: the start's precompile then stopped at 1128 of 1130 for good, its
+// last two builds waiting on a lock nobody would release.
+// A program in the file once ("<key>") is built again without the driver's optimizer, which AMD's compiler gets through on the
+// shaders its optimizer faults on (RX_VK_NOOPT's note): its draws come back. Twice ("<key> noopt": that faulted too) it is not
+// built at all. Neither is tried in the precompile, many builds at once, where a fault is what stops the start; only at a draw.
+// Delete the file to try them all again (a new driver).
+constexpr VkResult kDriverFault = (VkResult)-78;   // (guarded_graphics: a fault in the driver, told apart from what it returns)
+std::mutex driver_fault_mu;
+thread_local bool in_precompile = false;   // (precompile_run's workers)
+std::string driver_faults_path() {
+    char exe[MAX_PATH];
+    const DWORD n = GetModuleFileNameA(nullptr, exe, MAX_PATH);
+    std::string path(exe, n);
+    return path.substr(0, path.find_last_of("\\/") + 1) + "hookshot_driver_faults.txt";
+}
+/// key -> 1: faulted optimized (built unoptimized now), 2: faulted unoptimized too (not built)
+std::unordered_map<uint64_t, int>& driver_faults_locked() {
+    static std::unordered_map<uint64_t, int> map = [] {
+        std::unordered_map<uint64_t, int> m;
+        if (FILE* f = fopen(driver_faults_path().c_str(), "r")) {
+            char line[96];
+            while (fgets(line, sizeof line, f))
+                if (const uint64_t k = strtoull(line, nullptr, 16)) {
+                    int& level = m[k];
+                    level = std::max(level, strstr(line, "noopt") ? 2 : 1);
+                }
+            fclose(f);
+        }
+        if (!m.empty()) logf("vk: %zu programs faulted the driver before (hookshot_driver_faults.txt): built unoptimized, or not at all", m.size());
+        return m;
+    }();
+    return map;
+}
+/// 0: build as usual; 1: build without the driver's optimizer; 2: do not build
+int driver_fault_level(uint64_t key) {
+    std::lock_guard lk(driver_fault_mu);
+    const auto& m = driver_faults_locked();
+    const auto it = m.find(key);
+    return it == m.end() ? 0 : it->second;
+}
+void driver_fault_note(uint64_t key, int level, const char* what) {
+    std::lock_guard lk(driver_fault_mu);
+    int& have = driver_faults_locked()[key];
+    if (have >= level) return;
+    have = level;
+    if (FILE* f = fopen(driver_faults_path().c_str(), "a")) {
+        fprintf(f, level >= 2 ? "%016llx noopt\n" : "%016llx\n", (unsigned long long)key);
+        fclose(f);
+    }
+    logf("vk: the driver faulted building the %s pipeline of %016llx%s", what, (unsigned long long)key,
+         level >= 2 ? " unoptimized too: it is not built again" : ": built without the optimizer from now on");
+}
+
 // (hookshot) A driver's compiler that faults on a shader (amdvlk64.dll on a mesh program, Hookshot issue 26) costs that one draw, not the game
 #ifdef _WIN32
 __declspec(noinline) VkResult guarded_graphics(VkPipelineCache cache, const VkGraphicsPipelineCreateInfo* ci, VkPipeline* pl) {
     __try {
         return vkCreateGraphicsPipelines(dev.device, cache, 1, ci, nullptr, pl);
     } __except (1) {
-        return VK_ERROR_UNKNOWN;
+        return kDriverFault;
     }
 }
 __declspec(noinline) VkResult guarded_compute(VkPipelineCache cache, const VkComputePipelineCreateInfo* ci, VkPipeline* pl) {
@@ -833,6 +888,9 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
 /// part: -1 the whole pipeline, or the graphics pipeline library it stands for: 0 vertex input, 1 pre-rasterization, 2 fragment
 /// shader, 3 fragment output
 VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, int part) {
+    // (rx5700xt: a program that faulted the driver before: unoptimized at a draw, never in the precompile, not at all twice)
+    const int fault_level = driver_fault_level(p.key);
+    if (fault_level >= 2 || (fault_level && in_precompile)) return VK_NULL_HANDLE;
     const Shader::Info& vs = p.stages[0].info;
     const auto t0 = std::chrono::steady_clock::now();
     std::vector<VkPipelineShaderStageCreateInfo> stages;
@@ -1001,9 +1059,10 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
     {   // (local) RX_VK_NOOPT=1: build every pipeline without the driver's optimizer. AMD's proprietary compiler crashes
         // (-13 here) or takes minutes on some Ocarina shaders it builds in seconds unoptimized (Lichii #200, #210).
         static const bool noopt = getenv("RX_VK_NOOPT") != nullptr;
-        if (noopt) ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
+        if (noopt || fault_level == 1) ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
     }
     const VkResult r = guarded_graphics(part >= 0 ? VK_NULL_HANDLE : pcache, &ci, &pl);
+    if (r == kDriverFault) driver_fault_note(p.key, fault_level + 1, "graphics");
     if (part >= 0) {
         if (r != VK_SUCCESS) {
             static std::atomic<int> logged;
@@ -4661,11 +4720,16 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
     const size_t total = notes.size() + computes.size();
     std::atomic<size_t> next{0}, done{0};
     const auto worker = [&] {
+        in_precompile = true;   // (rx5700xt: programs that faulted the driver are left to the draws)
         for (;;) {
             const size_t i = next++;
             if (i >= total) return;
             if (i < computes.size()) {
                 Program& p = *computes[i];
+                if (driver_fault_level(p.key)) {   // (rx5700xt: built at its dispatch, if at all)
+                    done++;
+                    continue;
+                }
                 VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
                 ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
                 ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -4673,7 +4737,10 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
                 ci.stage.pName = "main";
                 pin_subgroup(ci.stage, p.workgroup[0]);
                 ci.layout = p.layout;
-                if (vkCreateComputePipelines(dev.device, pcache, 1, &ci, nullptr, &p.compute_pipeline) != VK_SUCCESS) p.compute_pipeline = VK_NULL_HANDLE;
+                // (rx5700xt: guarded, as at a dispatch; a fault here took the whole game down)
+                const VkResult made = guarded_compute(pcache, &ci, &p.compute_pipeline);
+                if (made != VK_SUCCESS) p.compute_pipeline = VK_NULL_HANDLE;
+                if (made == (VkResult)-77) driver_fault_note(p.key, 1, "compute");
             } else {
                 PipeNote& n = *notes[i - computes.size()];
                 const Program* p = program_find(n.prog, n.variant);
@@ -4813,9 +4880,15 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
         ci.stage.pName = "main";
         pin_subgroup(ci.stage, p.workgroup[0]);
         ci.layout = p.layout;
+        // (rx5700xt) a program that faulted the driver before: unoptimized, or not at all the second time (driver_faults_locked)
+        const int fault_level = driver_fault_level(p.key);
+        if (fault_level >= 2) {
+            p.failed = true;
+            SKIP_HERE();
+        }
         {   // (local) RX_VK_NOOPT=1, as for graphics pipelines above
             static const bool noopt = getenv("RX_VK_NOOPT") != nullptr;
-            if (noopt) ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
+            if (noopt || fault_level == 1) ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
         }
         const auto t0 = std::chrono::steady_clock::now();
         {   // (EvilOOT, 11-07: a freeze after Load was the driver's compiler on one compute pipeline, here, on the submit's thread)
@@ -4823,6 +4896,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
             if (told++ < 400) logf("vk: compute pipeline of %016llx: compiling", (unsigned long long)p.key);
         }
         if (const VkResult made = guarded_compute(pcache, &ci, &p.compute_pipeline); made != VK_SUCCESS) {
+            if (made == (VkResult)-77) driver_fault_note(p.key, fault_level + 1, "compute");
             static std::atomic<int> told{0};
             if (told++ < 20) logf("vk: compute pipeline of %016llx not made (%d)", (unsigned long long)p.key, (int)made);
             p.compute_pipeline = VK_NULL_HANDLE;
