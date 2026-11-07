@@ -68,6 +68,20 @@ Lighting unchanged. ~97% of what is written back goes by changed chunks.
 |---|---|---|
 | `RX_VK_WB_SKIP=<key prefix,...>` | Those programs' storage writes stay in VRAM (not copied back at all) | Experiment; superseded by the changed-chunk write-back |
 
+Round 3 — the present no longer blocks the game's submits (`gpu/vk/vk_replay.cpp`, `present_image`):
+
+amdvlk64.dll on Windows waits on the CPU, inside `vkQueuePresentKHR`, for the frame's semaphore. The present held the queue's
+lock (`present_mu`) until the GPU had finished the whole frame, and the game's main thread, submitting its next work through
+the same lock, waited there (~19% of its time; 78% of the moments no game thread ran). Now, **with frame generation off**,
+the display thread submits under the lock, waits for the frame's fence with no lock held, and presents the finished image
+(no semaphore) under the lock again: same queue, same order. `RX_VK_PRESENT_WAIT=0`: as before.
+
+- The main thread's wait on the lock: 78% → 3% of the idle moments; frame pacing tighter (most frames 22–30 ms).
+- **The one-frame flicker without frame generation (upstream issue #346) is gone** here, at about the same smoothness as
+  with frame generation, so frame generation (and its input delay) is no longer needed to hide it.
+- With frame generation on, the old path is kept: waiting there broke its pacing of the made frames (flicker).
+- Tried and dropped: presenting on a second queue of the graphics family. amdvlk on Windows flickered with it, no gain.
+
 ## Building only the renderer
 
 Only `hookshot_vk.dll` changes. With a game folder already built by Hookshot Builder, build this branch's renderer

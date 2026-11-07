@@ -2516,6 +2516,32 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
     si.pCommandBufferInfos = &cb;
     si.signalSemaphoreInfoCount = 1;
     si.pSignalSemaphoreInfos = &signal;
+    // (rx5700xt) The frame waited for here, not in the driver. amdvlk64.dll on Windows waits on the CPU, inside vkQueuePresentKHR,
+    // for the semaphore the frame's work signals: the present held the queue's lock (present_mu) until the GPU had finished the
+    // whole frame, and the game's main thread, submitting its next one through the same lock, waited ~19% of its time there.
+    // Now the submit takes the lock alone, this thread waits for the frame's fence with no lock held, and the present (of an
+    // image that is done: no semaphore) takes the lock again only for itself. Same queue, same order. RX_VK_PRESENT_WAIT=0: as
+    // before. Not with frame generation on: its own display thread paces the made frames between the game's, and a present that
+    // waits here broke that pacing (the picture flickered); without it the one-frame flicker that frame generation used to hide is
+    // gone, at about the same smoothness (an RX 5700 XT in Kokiri)
+    static const bool wait_here = !getenv("RX_VK_PRESENT_WAIT") || atoi(getenv("RX_VK_PRESENT_WAIT")) != 0;
+    if (wait_here && !framegen_on()) {
+        si.signalSemaphoreInfoCount = 0, si.pSignalSemaphoreInfos = nullptr;
+        {
+            std::lock_guard qk(dev.present_mu);
+            vkQueueSubmit2(dev.queue, 1, &si, f.done);
+        }
+        vkWaitForFences(dev.device, 1, &f.done, VK_TRUE, UINT64_MAX);
+        VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+        pi.swapchainCount = 1;
+        pi.pSwapchains = &dev.swapchain;
+        pi.pImageIndices = &index;
+        std::lock_guard qk(dev.present_mu);
+        res = vkQueuePresentKHR(dev.queue, &pi);
+        if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR)
+            create_swapchain(dev.swap_extent.width, dev.swap_extent.height);
+        return;
+    }
     std::lock_guard qk(dev.present_mu);
     vkQueueSubmit2(dev.queue, 1, &si, f.done);
     VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
