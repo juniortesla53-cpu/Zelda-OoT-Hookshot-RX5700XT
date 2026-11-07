@@ -9,6 +9,7 @@
 #include "vk_xfer.h"
 #include "vk_draw.h"   // (end_pass: a pass cannot stay open across a transfer)
 #include "vk_texture.h"
+#include "vk_gprof.h"
 
 namespace mkwvk {
 namespace {
@@ -150,6 +151,7 @@ bool size_compatible(const Sub& a, const Sub& b) {
 } // namespace
 
 void copy_b2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_bt& p, bool to_image) {
+    gprof_event(cmd, to_image ? "copy buffer to texture" : "copy texture to buffer");
     // (ASTC blocks into a decoded image: into the texture's storage on the CPU, which uploads it again. Other formats are
     // copied on the GPU: the buffer may hold what the GPU wrote this submission (not yet in guest memory), and the image
     // it fills is kept (texture_frame: a texture the GPU filled once is not evicted). RX_VK_B2T_CPU=1: on the CPU too)
@@ -215,6 +217,7 @@ void copy_b2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_bt& p, bool to
 }
 
 void copy_t2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_tt& p) {
+    gprof_event(cmd, "copy texture to texture");
     Sub s, d;
     if (!resolve(p.src, &p.sv, p.has_sv != 0, p.sr, s, true)) return;
     if (!resolve(p.dst, &p.dv, p.has_dv != 0, p.dr, d, true)) return;
@@ -291,6 +294,7 @@ void copy_t2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_tt& p) {
 }
 
 void clear_tex(VkCommandBuffer cmd, NvnState& st, const nvn_p_clear_tex& p) {
+    gprof_event(cmd, "clear texture");
     Sub s;
     if (!resolve(p.tex, &p.view, p.has_view != 0, p.r, s)) return;
     const uint32_t lw = std::max(1u, s.tex->width >> s.level), lh = std::max(1u, s.tex->height >> s.level);

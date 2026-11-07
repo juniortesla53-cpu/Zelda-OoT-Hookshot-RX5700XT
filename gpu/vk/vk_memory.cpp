@@ -25,6 +25,7 @@
 
 #include "vk_internal.h"
 #include "vk_texture.h"   // (upload_command_buffer)
+#include "vk_gprof.h"
 #include "import_hold.h"
 
 namespace mkwvk {
@@ -1747,6 +1748,7 @@ bool mirror_make(Pool& pool) {
 }
 
 void memory_end_submission(VkCommandBuffer cmd) {
+    gprof_event(cmd, "write-back to guest memory");   // (rx5700xt: RX_VK_GPU_PROFILE)
     std::lock_guard lk(pools_mu);
     {   // (every 600 submissions: how the mirror syncs' dirty pages were read)
         static int64_t n, l_live, l_cap;

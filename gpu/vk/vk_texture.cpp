@@ -30,6 +30,7 @@
 #include "vk_texture.h"
 #include "vk_draw.h"
 #include "vk_dump.h"
+#include "vk_gprof.h"
 
 #include <span>
 
@@ -1494,6 +1495,7 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
 } // namespace
 
 void full_barrier(VkCommandBuffer cmd) {
+    gprof_event(cmd, "barrier");   // (rx5700xt: RX_VK_GPU_PROFILE's time between passes)
     VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
     b.srcStageMask = b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
     b.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;

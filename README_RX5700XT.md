@@ -41,6 +41,17 @@ Result of round 1 in Kokiri (same spot): the replay thread went from ~74% to ~64
 (~32 fps). The next limit is the GPU's idle time between passes (17.5 ms of GPU time a frame for 5.7 ms of measured
 passes: full barriers and ~1100 small mirror copies a frame) — round 2.
 
+Round 2 — the GPU's time between passes:
+
+`RX_VK_GPU_PROFILE=1` now times the gaps between passes too, named after what was recorded there (barriers, write-backs,
+clears, copies). In Kokiri: **20.2 ms of GPU time a frame, 12.1 ms of it between passes, ~10.5 ms of that writing GPU results
+back to guest memory** (67 MB a frame over the Ryzen 5 5500's PCIe 3.0). Almost all of it is one 15.2 MB buffer that four
+lighting compute programs write, each in its own submission: copied back whole four times a frame.
+
+| Option (in `hookshot_env.txt`) | Effect | Status |
+|---|---|---|
+| `RX_VK_WB_SKIP=102f5b0abb0f1e63,78ccf14779ec3efb,7650519f88e59b19,abccf81b45c5eb50,7984161db3e053b5` | Those programs' storage writes stay in VRAM (not copied back). Write-back 67 → 37 MB a frame, GPU time 20.3 → 15–17 ms, real fps ~30 → ~38 | **Opt-in, under test.** Lighting looks right with frame generation on; frame generation can hide single-frame errors |
+
 ## Building only the renderer
 
 Only `hookshot_vk.dll` changes. With a game folder already built by Hookshot Builder, build this branch's renderer

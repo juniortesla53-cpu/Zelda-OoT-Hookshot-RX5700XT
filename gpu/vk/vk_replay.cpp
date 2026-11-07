@@ -151,6 +151,7 @@ Recording& begin_recording(uint64_t value) {
 }
 void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at = 0) {
     const bool uploads = texture_uploads_recorded();
+    gprof_end_recording(r.cmd);
     gpu_time_end(r);
     vkEndCommandBuffer(r.upload);
     vkEndCommandBuffer(r.cmd);
@@ -391,6 +392,7 @@ namespace {
 /// their overlay copies)
 void flush_ub_updates(VkCommandBuffer cmd) {
     if (ub_first_of_recording >= ub_updates.size()) return;
+    gprof_event(cmd, "uniform writes");
     full_barrier(cmd);
     for (size_t i = ub_first_of_recording; i < ub_updates.size(); i++)
         gpu_write(cmd, ub_updates[i].dst, ub_updates[i].bytes.data(), ub_updates[i].bytes.size());
@@ -519,6 +521,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                          dst ? "bound" : "NOT bound (on the CPU)");
             }
             end_pass(cmd);
+            gprof_event(cmd, "buffer copy");
             full_barrier(cmd);
             if (src && dst) {
                 const VkBufferCopy r{src.offset, dst.offset, c.size};
@@ -563,6 +566,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                          (unsigned long long)c.size, (unsigned)c.value, dst ? "on the GPU" : "NOT bound");
             }
             end_pass(cmd);
+            gprof_event(cmd, "buffer clear");
             full_barrier(cmd);
             if (dst && !(dst.offset & 3) && !(c.size & 3)) {
                 vkCmdFillBuffer(cmd, dst.buffer, dst.offset, c.size, c.value);

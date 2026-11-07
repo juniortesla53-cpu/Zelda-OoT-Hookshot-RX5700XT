@@ -1551,8 +1551,37 @@ bool table_track_open(int logged, int seen, int unlimited) {
     return logged < 60 && (unlimited || seen < kTableTrackLooks);
 }
 
+/// (rx5700xt) RX_VK_WB_SKIP=<key prefix,...>: those programs' written storage buffers are not copied back to guest memory at the
+/// submission's end (they stay the GPU's, in the mirror, stamped as the GPU's like any other write). On an RX 5700 XT + Ryzen 5 5500
+/// (PCIe 3.0) the write-back was 67 MB and ~10 ms of GPU time a frame in Kokiri, almost all of it one 15.2 MB buffer that four
+/// lighting compute programs write, each in its own submission: copied back whole four times a frame. "-": none.
+bool wb_skip(uint64_t key) {
+    static const std::vector<std::pair<uint64_t, uint64_t>> list = [] {   // (value, mask) of each prefix
+        std::vector<std::pair<uint64_t, uint64_t>> v;
+        const char* e = getenv("RX_VK_WB_SKIP");
+        if (!e || !strcmp(e, "-")) return v;
+        for (const char* q = e; *q;) {
+            const char* end = q;
+            while (*end && *end != ',') end++;
+            const size_t n = std::min<size_t>((size_t)(end - q), 16);
+            if (n) {
+                const uint64_t value = strtoull(std::string(q, n).c_str(), nullptr, 16) << (4 * (16 - n));
+                const uint64_t mask = n == 16 ? ~0ull : ~(~0ull >> (4 * n));
+                v.push_back({value, mask});
+            }
+            q = *end ? end + 1 : end;
+        }
+        if (!v.empty()) logf("vk: RX_VK_WB_SKIP: %zu programs' storage writes are not copied back to guest memory", v.size());
+        return v;
+    }();
+    for (const auto& [value, mask] : list)
+        if ((key & mask) == value) return true;
+    return false;
+}
+
 void build_descriptors(const NvnState& s, const Program& p) {
     dw.reset();
+    const bool no_writeback = wb_skip(p.key);
     draw_sampled.clear();
     dump_written.clear();
     dump_inputs.clear();
@@ -1637,7 +1666,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
                 // (hookshot) a storage buffer table's entries (count > 1, Info::global_tables): the ones past the table's
                 // end are whatever the constant buffer holds there, bound only when they look like a buffer
                 const bool plausible = d.count == 1 || (size && size <= (256ull << 20) && host->gpu_guest(base));
-                BufferRef b = addr && plausible ? gpu_buffer_bind(base, n, d.is_written && !bare) : BufferRef{};
+                BufferRef b = addr && plausible ? gpu_buffer_bind(base, n, d.is_written && !bare && !no_writeback) : BufferRef{};
                 // (AyyBeeDee20738, PR 138) a table entry's region that does not fit its pool this moment bound nothing, and the next
                 // frame bound it again: its reads flipped between the data and 0, the picture between bright and dark. Smaller,
                 // down to 1 MB, rather than nothing (and past what is bound the shaders' search now goes on to the page table)
@@ -1646,7 +1675,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
                     uint64_t m = n;
                     if (const uint64_t end = gpu_pool_end(base); end > base) m = std::min<uint64_t>(m, end - base);
                     for (; !b.buffer && m >= (1ull << 20); m = (m / 2) & ~3ull) {
-                        b = gpu_buffer_bind(base, m, d.is_written && !bare);
+                        b = gpu_buffer_bind(base, m, d.is_written && !bare && !no_writeback);
                         if (b.buffer) {   // (EvilOOT: the descriptor's range what was bound, so the search ends there)
                             n = m;
                             break;
@@ -1657,7 +1686,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
                 // the counts and records the culling setup writes there survive the mirror's syncs from guest memory and go
                 // back to it, as on the console; the rest of the guessed 1 MB stays the GPU's (copied back whole, it
                 // overwrote the CPU's own data beside it)
-                if (b && bare && d.is_written && d.cbuf_offset != 0x880) {
+                if (b && bare && d.is_written && d.cbuf_offset != 0x880 && !no_writeback) {
                     const uint64_t head = std::min<uint64_t>(n, (addr - base) + 0x40);
                     (void)gpu_buffer_bind(base, (head + 3) & ~3ull, true);
                 }
@@ -2591,6 +2620,7 @@ uint16_t draw_hazards(VkCommandBuffer cmd, const Program& p, const NvnState& s, 
 } // namespace
 
 void clear_color_target(VkCommandBuffer cmd, NvnState& s, int index, const float rgba[4], uint32_t mask) {
+    gprof_event(cmd, "clear colour");
     ParLock lk;
     mask &= 0xF;
     if (!mask) return;
@@ -2630,6 +2660,7 @@ void clear_color_target(VkCommandBuffer cmd, NvnState& s, int index, const float
 
 void clear_depth_stencil(VkCommandBuffer cmd, NvnState& s, float depth, bool depth_mask, uint32_t stencil,
                          uint32_t stencil_mask) {
+    gprof_event(cmd, "clear depth");
     ParLock lk;
     const Targets at = targets(s);
     if (!at.depth) return;
@@ -2931,6 +2962,7 @@ void probe_log(uint64_t f) {
 thread_local std::vector<std::pair<uint64_t, uint64_t>> dump_mesh_indirect;   // (program key, indirect address)
 void end_pass(VkCommandBuffer cmd) {
     if (!pass.open) return;
+    gprof_event(cmd, "pass end");   // (rx5700xt: the targets' stores)
     vkCmdEndRendering(cmd);
     pass.open = false;
     if (dump_on() && !dump_mesh_indirect.empty()) {
