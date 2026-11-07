@@ -1,6 +1,9 @@
-# Hookshot — RX 5700 XT branch
+# Hookshot for the AMD Radeon RX 5700 XT
 
-An experimental branch of [NotRexed/Hookshot](https://github.com/NotRexed/Hookshot) tuned for a PC with an
+**Target hardware: AMD Radeon RX 5700 XT (RDNA1, 8 GB).** Tested with a Ryzen 5 5500, 32 GB RAM, Windows 11.
+Other GPUs are not tested here.
+
+An experimental fork of [NotRexed/Hookshot](https://github.com/NotRexed/Hookshot) tuned for a PC with an
 **AMD Radeon RX 5700 XT** (RDNA1) and a **Ryzen 5 5500**. Everything else about Hookshot is unchanged: you still need
 your own copy of the game, and nothing from the game is in this repository.
 

@@ -1,3 +1,12 @@
+> [!IMPORTANT]
+> **This is the RX 5700 XT fork of Hookshot.** It is tuned and tested on an **AMD Radeon RX 5700 XT** (RDNA1) with a
+> Ryzen 5 5500. Other cards may work, but nothing here is tested on them. What changed and why:
+> **[README_RX5700XT.md](README_RX5700XT.md)**. The original project is
+> [NotRexed/Hookshot](https://github.com/NotRexed/Hookshot).
+>
+> **Esta é a versão do Hookshot para RX 5700 XT.** Ajustada e testada numa **AMD Radeon RX 5700 XT** (RDNA1) com
+> Ryzen 5 5500. O que mudou: **[README_RX5700XT.md](README_RX5700XT.md)**.
+
 <h1 align="center">
   <br>
   <a>
