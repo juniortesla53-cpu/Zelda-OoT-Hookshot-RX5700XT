@@ -34,6 +34,10 @@
 Hookshot is a static recompilation. The game's code is translated to C and compiled into a Windows program, the
 console's system software is reimplemented, and the Switch 2 graphics are rebuilt on Vulkan. All of this happens
 **on your PC, from your own copy of the game**.
+<br>
+
+Discord: https://discord.gg/EajnD2AJD9 Please use the hookshot-discussion channel, as the main point of the discord is for webports, not my work
+<br>
 
 > [!IMPORTANT]
 > This repository **does not contain the game, keys or an executable**, and it does not explain how to get them. You
@@ -92,8 +96,9 @@ A build takes about 40 minutes, and you can use your PC in the meantime.
    make it executable (`chmod +x`) and start it. It is Hookshot Builder with everything it needs inside: the compiler,
    the libraries and the Vulkan renderer. Nothing else has to be installed.
 2. Choose your `.nup` (or your `romfs` and `exefs` folders), a language and a folder for the game, and build.
-3. When it finishes, press Play. The game is also added to your applications menu, and starting the AppImage again
-   offers Play. The game itself is `hookshot` in the folder you chose: it runs without the AppImage.
+3. When it finishes, press Play. The game is also added to your applications menu. The same AppImage starts that
+   game without opening the builder: `./Hookshot-<version>-x86_64.AppImage --play`, or `--play ~/Games/Hookshot`
+   for a different folder. The game itself is `hookshot` in the folder you chose: it runs without the AppImage.
 
 From the command line: `./Hookshot-<version>-x86_64.AppImage --cli --nup ~/your-game.nup --out ~/Games/Hookshot`
 (the same options as `make_game.py`).
@@ -104,6 +109,11 @@ to `~/.cache/hookshot-builder`. Saves go in `$XDG_DATA_HOME/hookshot` (`~/.local
 beside the game from an earlier build is moved there once. `HOOKSHOT_JOBS` sets how many files compile at once.
 Switches to test (`RX_VK_NOOPT=1` and the others) go in `hookshot_env.txt` beside the game, one `NAME=VALUE` a line,
 as on Windows.
+
+`RX_VK_MOVIE_UPSCALE=linear` replaces the movie's neural upscale with the existing linear path. The default `auto` behavior
+keeps the networks and falls back only when movie GPU time exceeds the existing 40 ms trigger. This switch does not change
+the gameplay upscaler and can make movie images look softer. It works on Windows and Linux; `RX_VK_NETWORK_KEEP=all` takes
+precedence and keeps the movie networks enabled.
 
 Building it yourself without the AppImage: `clang` and `lld` (LLVM 23 or newer reads the play profile; an older one
 builds without it), Python 3 with `lz4`, `numpy`, `capstone`, `unicorn` and `zstandard`, FFmpeg's development files
@@ -140,9 +150,8 @@ What a new build keeps and what it replaces in the game folder:
 
 ### What you need
 
-- The Visual Studio C++ tools and the Windows SDK. Microsoft does not allow these to be bundled, so install
-  [Visual Studio Build Tools](https://visualstudio.microsoft.com/downloads/) with "Desktop development with C++". The
-  builder tells you if they are missing.
+- Nothing to install for the build itself: Hookshot Builder brings its own compiler ([llvm-mingw](https://github.com/mstorsjo/llvm-mingw),
+  as TotK Recomp does), Python and libraries. Visual Studio and the Windows SDK are no longer needed.
 - 64-bit Windows 10 or 11.
 - A graphics card with Vulkan 1.3 and mesh shaders, with an up-to-date driver. Only NVIDIA has been tested.
 - 16 GB of RAM or more. A run uses about 10 GB.
@@ -155,7 +164,9 @@ To build from the command line you also need:
 - Python 3 with `lz4`, `numpy`, `capstone`, `unicorn` and `zstandard`:
   `pip install lz4 numpy capstone "unicorn>=2.1,<2.2" zstandard`
   Use Python from python.org: the Microsoft Store's Python installs packages where `python -I` does not look.
-- The clang from [emsdk](https://github.com/emscripten-core/emsdk), at `C:\emsdk`.
+- [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) (the `ucrt-x86_64` build), with `HOOKSHOT_MINGW` set to its folder. Without
+  it the build uses the clang from [emsdk](https://github.com/emscripten-core/emsdk) at `C:\emsdk` with Visual Studio's C++ tools
+  and the Windows SDK (`HOOKSHOT_MSVC=1` forces that route).
 - Visual Studio 2022 with .NET 8, only if you want to change the builder itself.
 - The prebuilt tools that go in `third_party/`: `a64emit`, `lld-link`, `zbic` and SDL2.
 - What the HookshotBuilder zip carries in its `tools` folder and a clone does not. The builder sets the variables
@@ -188,11 +199,13 @@ Never send game files.
 
 ## In-game menu
 
-Press <kbd>Insert</kbd> in game. Everything is off by default, and your choices are saved in `hookshot_options.ini`
-beside the game.
+Press <kbd>Insert</kbd> in game, or on a controller the Home button (or Select and Start together). Everything is off
+by default, and your choices are saved in `hookshot_options.ini` beside the game. On a controller the D-pad chooses
+and changes, the bottom face button changes too, and the right one closes the menu.
 
 | Option | Choices |
 |---|---|
+| Quality preset | Custom, Minimum (4GB), Low (6GB), Balanced (8GB), High (12GB), Ultra (16GB+) |
 | Frame generation | Off, 2x, 3x, 4x |
 | Frame pacing | Off, On |
 | Resolution | Auto (the game's own dynamic resolution), 100%, 75%, 67%, 50% |
@@ -209,6 +222,34 @@ With Game speed on Per frame, the game runs slower whenever it is below 60 fps. 
 
 Use a controller, or the keyboard and mouse. On the keyboard, <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> move
 and the arrow keys turn the camera.
+
+To change which gamepad button or key presses a Switch button, open the in-game menu's Controls page. Choose a
+button and a column, press <kbd>Enter</kbd> (or the bottom face button), then the new button or key; <kbd>Delete</kbd>
+clears it, and Reset to defaults puts them all back. A gamepad button taken from another Switch button swaps with it.
+The page saves them in `hookshot_options.ini`, where you can also write them yourself:
+
+```ini
+pad_a=0
+key_a=69,13
+```
+
+`pad_<button>` is a gamepad input by position: 0 bottom face button, 1 right, 2 left, 3 top, 4 Select or Back, 5 Home,
+6 Start, 7 and 8 the stick presses, 9 and 10 the shoulder buttons, 11 to 14 the D-pad (up, down, left, right), 15 and
+16 the triggers, -1 none. `key_<button>` is one or two
+[Windows key codes](https://learn.microsoft.com/windows/win32/inputdev/virtual-key-codes) in decimal (69 is
+<kbd>E</kbd>, 13 <kbd>Enter</kbd>), 0 none. The buttons are `a` `b` `x` `y` `l` `r` `zl` `zr` `plus` `minus` `ls`
+`rs` `left` `up` `right` `down`. A button the file leaves out keeps its default.
+
+## Mods
+
+Put mods in a `mods` folder beside `hookshot.exe` (or point `HOS_MODS` at another folder), in the layout emulators
+use: `mods/<name>/romfs/...` holds files that replace or add to the game's own. Deeper layouts such as
+`mods/contents/<title id>/<name>/romfs` work too. A folder whose name starts with `-` or `_` is off. When two mods
+have the same file, the one whose folder name sorts last wins, so name them `01-...`, `02-...` to set the order.
+
+Only RomFS mods are loaded. `exefs` patches (`.pchtxt`, `.ips`) are left out: Hookshot compiles the game's code ahead
+of time, so patching its instructions would need a rebuild. The log (`hookshot_log.txt` when started from its icon)
+names each mod and the files read from it.
 
 ## How it works
 
@@ -232,21 +273,31 @@ Bigger ways to help:
 - **Fixes in your own fork.** Fork the project, fix what you find and send the change back. Keep game files, keys and
   anything generated from your game out of it.
 
+[CONTRIBUTING.md](CONTRIBUTING.md) has the setup, the test commands, the code conventions and what a good pull request
+looks like.
+
 ## Credits
 
 Hookshot exists thanks to the work of many people:
 
 - **NotRexed**: Hookshot, BlueShell (Mario Kart World), Skybound (Tears of the Kingdom) and the a64-kit tools.
+- **EvilBoyce** (Discord: evilmfkr, [fork](https://github.com/evilmfkr/Hookshot)): Ocarina of Time's foliage culling, ambient
+  light, water and fog fixes, the freeze after Load, the exposure flashes, and the rendering diagnostics tools.
 - **[Eden](https://git.eden-emu.dev/eden-emu/eden)** and **Eglantine**: the shader recompiler and Switch 2 shader work.
 - **suyu**: the graphics decoders and the AArch64 translator.
 - **[seedds/nxnative](https://github.com/seedds/nxnative)**: reference for how task and mesh shaders work.
-- **[zortos293/Lichii](https://github.com/zortos293/Lichii)**: reference for Ampere shader lowering.
+- **[EvilBoyce / evilmfkr](https://github.com/evilmfkr/Hookshot)** (EvilOOT): the GPU culling that brings back Kokiri's foliage
+  (trees, ferns, grass, falling leaves, fireflies), the ambient light probes, the pond's water, the game's own fog, the freeze
+  after Load (Horizon's mutex handoff) and the exposure flicker fix.
+- **[zortos293/Lichii](https://github.com/zortos293/Lichii)**: reference for Ampere shader lowering, and its compare-exchange retry fix.
+- **[mstorsjo/llvm-mingw](https://github.com/mstorsjo/llvm-mingw)**: the bundled Windows compiler (no Visual Studio needed).
 - **[kinnay/zbic](https://github.com/kinnay/zbic)**, **Opus** and **SDL**: decompression, audio and controllers.
 - **[sostenesfreitas/ocarina-recomp](https://github.com/sostenesfreitas/ocarina-recomp)**: this README's layout, and its notes
   confirmed the mesh stage's control section.
 - **[MythosOfs/Orchid](https://github.com/MythosOfs/Orchid)**: the fog and exposure workaround for Ocarina of Time.
 - **Mesa (NAK)**: the reference for Ampere's instruction encoding.
-- Everyone who sent fixes: klimovich008, d3zessete, chrispository, vzeol, monsterlag and leonidasmark, among others.
+- Everyone who sent fixes: SkippySteve (Linux and the AppImage, and many more), klimovich008, d3zessete, chrispository, vzeol,
+  monsterlag, leonidasmark, Segmentree, Zorkats, ShyVortex, hiKareeem, gab9281 and i900gaming, among others.
 
 ## License
 

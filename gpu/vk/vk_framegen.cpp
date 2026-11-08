@@ -187,6 +187,7 @@ bool ensure_size(VkCommandBuffer cmd, uint32_t w, uint32_t h) {
         std::unique_lock lk(fg.mu);
         fg.cv.wait(lk, [] { return fg.jobs.empty() && !fg.sets[0].busy && !fg.sets[1].busy && !fg.sets[2].busy; });
     }
+    queue_flush();
     vkDeviceWaitIdle(dev.device);
     for (int i = 0; i < 2; i++) {
         drop_img(fg.frames[i]), drop_img(fg.lumas[i]), drop_img(fg.flows[i]);
@@ -275,7 +276,11 @@ void display_main() {
         // was the stutter, whatever the frame rate. Every frame now has its place on an even line, the recent frame time
         // apart, a frame early waiting for it: never more than one game frame behind what the game handed over, and a line
         // that has fallen behind what came starts again from now. RX_VK_PACE=0: as they come.
-        const bool pace = opts.pace != 0;
+        // (rx5700xt) and always with made frames in the set: shown as they came, a made frame went out right behind the game's
+        // (on an RX 5700 XT 186 of 372 presents under 7 ms apart, the rest 17-25+ ms), the same picture rate as without it.
+        // RX_VK_PACE=0 still turns the pacer off
+        static const bool pace_env_off = getenv("RX_VK_PACE") && !atoi(getenv("RX_VK_PACE"));
+        const bool pace = opts.pace != 0 || (j.set->made > 0 && !pace_env_off);
         const int shown = j.set->made + 1;
         const int64_t step = interval / shown;
         for (int k = 0; k <= j.set->made; k++) {
@@ -329,6 +334,7 @@ VkImage framegen_scale(VkCommandBuffer cmd, VkImageView src, VkImage image, uint
         if (fg.cropped_w != cw || fg.cropped_h != ch) {
             {
                 std::lock_guard qk(dev.present_mu);
+                queue_flush_locked();
                 vkDeviceWaitIdle(dev.device);
             }
             drop_img(fg.cropped);
@@ -348,6 +354,7 @@ VkImage framegen_scale(VkCommandBuffer cmd, VkImageView src, VkImage image, uint
     if (fg.scaled_w != dw || fg.scaled_h != dh) {
         {
             std::lock_guard qk(dev.present_mu);   // (the queue is idle only while nothing else submits to it)
+            queue_flush_locked();
             vkDeviceWaitIdle(dev.device);
         }
         drop_img(fg.scaled);

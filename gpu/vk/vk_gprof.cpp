@@ -14,7 +14,7 @@
 namespace mkwvk {
 namespace {
 
-constexpr int kSlots = 24;                // (vk_replay.cpp's kRecordings)
+constexpr int kSlots = 48;                // (vk_replay.cpp's kRecordings)
 constexpr uint32_t kMarks = 2048;         // timestamps a recording can take
 VkQueryPool pool = VK_NULL_HANDLE;
 struct Slot {
