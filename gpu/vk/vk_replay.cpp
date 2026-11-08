@@ -2808,9 +2808,33 @@ bool replay_behind() {
     return !q_jobs.empty() || q_busy || blocked_n.load() > 0;
 }
 
+/// (rx5700xt) The host keeps its last physical core free of the game's threads for the replay thread (hos_reserved_cpus), but that
+/// thread only works with RX_VK_ASYNC=1, off by default: the replay runs on the game's own "Presentation Thread", which was kept
+/// off that core with the others. On a Ryzen 5 5500 (6 cores) the core sat idle while the frame's critical path shared the other
+/// five with every game thread. Now the Presentation Thread is moved there at its first submit: 39.4 -> 42.5 fps in Kokiri
+/// (fullscreen). RX_VK_PIN_PRESENT=0: as before
+void pin_presentation_thread() {
+    static thread_local bool checked = false;
+    if (checked) return;
+    checked = true;
+    static const bool off = getenv("RX_VK_PIN_PRESENT") && !atoi(getenv("RX_VK_PIN_PRESENT"));
+    if (off || !host->reserved_cpus) return;
+    const uint64_t mask = host->reserved_cpus();
+    if (!mask) return;
+    PWSTR d = nullptr;
+    bool presentation = false;
+    if (SUCCEEDED(GetThreadDescription(GetCurrentThread(), &d)) && d) presentation = !wcscmp(d, L"Presentation Thread");
+    if (d) LocalFree(d);
+    if (!presentation) return;
+    if (SetThreadAffinityMask(GetCurrentThread(), (DWORD_PTR)mask))
+        logf("vk: the game's Presentation Thread (the replay's) runs on logical processors %#llx, the core kept for the replay "
+             "(RX_VK_PIN_PRESENT=0: as before)", (unsigned long long)mask);
+}
+
 std::mutex submit_order_mu;   // (captures and submits queued in the same order)
 void submit_q(const uint64_t* handles, int n, uint64_t queue) {
     if (!async_on()) {
+        pin_presentation_thread();
         // (the replay here is on the submitting thread, but the game's other threads go on writing their next frames: a pool
         // synced from guest memory later in the frame read those. The capture is taken here too)
         // (EvilOOT) on by default: without it every mirror sync read guest memory as it was at the replay, the game's later

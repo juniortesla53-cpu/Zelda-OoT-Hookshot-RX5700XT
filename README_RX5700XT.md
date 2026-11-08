@@ -82,6 +82,21 @@ the display thread submits under the lock, waits for the frame's fence with no l
 - With frame generation on, the old path is kept: waiting there broke its pacing of the made frames (flicker).
 - Tried and dropped: presenting on a second queue of the graphics family. amdvlk on Windows flickered with it, no gain.
 
+Round 4 — the idle reserved core (`gpu/vk/vk_replay.cpp`, `pin_presentation_thread`):
+
+On 8+ logical processors the host keeps its last physical core free of the game's threads for the replay thread, but that
+thread only works with `RX_VK_ASYNC=1` (off by default). The replay runs on the game's own "Presentation Thread", which was
+kept off that core with the others: on a 6-core Ryzen 5 5500 the core sat idle while the frame's critical path shared the
+other five with every game thread. Now the Presentation Thread is moved onto that core at its first submit.
+`RX_VK_PIN_PRESENT=0`: as before.
+
+Measured live in one session (the thread's affinity switched from outside, alternating, 4 rounds of ~25 s each, fullscreen,
+Kokiri): **43.6 fps pinned against 41.2 not pinned** (the last two, steadiest rounds: 44.9 / 44.8 against 43.0 / 43.2).
+Frame rate in this game swings by ±5 fps from one 20 s window to the next, so single before/after runs are not enough.
+
+Tip: play **fullscreen**. Windowed, every frame goes through the desktop compositor: ~34 fps there against ~40+ fullscreen
+on this PC.
+
 ## Building only the renderer
 
 Only `hookshot_vk.dll` changes. With a game folder already built by Hookshot Builder, build this branch's renderer
