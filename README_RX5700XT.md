@@ -94,6 +94,22 @@ Measured live in one session (the thread's affinity switched from outside, alter
 Kokiri): **43.6 fps pinned against 41.2 not pinned** (the last two, steadiest rounds: 44.9 / 44.8 against 43.0 / 43.2).
 Frame rate in this game swings by ±5 fps from one 20 s window to the next, so single before/after runs are not enough.
 
+Round 5 — upstream merged (release `no-visual-studio`), and its readback wait replaced:
+
+- Upstream's 116 commits are in (fewer flashes #296, 30 mesh shaders #351, ~15% CPU from SkippySteve's replay PRs, controls,
+  text speed, quality presets, Alt+Enter). Where upstream and this branch fixed the same thing (uniform reads, the texture
+  lookup), upstream's version is kept.
+- Upstream's #296 makes the CPU wait for the GPU before it reads back GPU results. On this PC ~4% of readbacks waited ~18.6 ms
+  each: the game's threads spun in their sleeps (worker threads 15–25% → 50–60%) and fps fell from ~43 to ~30. Here it is
+  **off by default** (`RX_VK_READBACK_WAIT=1`: on), and what it protected — OoT's exposure meter, which the GPU adds into and
+  the CPU resets to 0 — is kept right by the **readback-page refresh from YunaraDebugs' PR #430**: each submission first copies
+  the pages the CPU reads back from guest memory into the mirror (`RX_VK_NO_RB_REFRESH=1`: off). Fps back to ~40 fullscreen,
+  no white flashes or exposure steps.
+- Frame generation now **paces** its made frames even with the menu's Frame pacing off (they used to go out <7 ms behind the
+  game's, the same picture rate as without it). The made frames themselves still show optical-flow artifacts when the camera
+  turns (flicker): for smoother motion on this card, an external frame generator (e.g. Lossless Scaling's LSFG) with the game's
+  own frame generation off looks better.
+
 Tip: play **fullscreen**. Windowed, every frame goes through the desktop compositor: ~34 fps there against ~40+ fullscreen
 on this PC.
 

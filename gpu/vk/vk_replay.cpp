@@ -1925,10 +1925,16 @@ void invalidate(uint64_t gpu, uint64_t size) {
     // the CPU reads and sets to 0) this way: it read 0 one frame, then the old sum came back over the CPU's 0 and the next
     // frame added to it (2x): the exposure stepped 0.2 EV up and down several times a second (the white flashes).
     // RX_VK_NO_READBACK_WAIT=1: as before
+    // (rx5700xt) off by default here: the readback pages' refresh (vk_memory.cpp memory_rb_refresh, from PR #430) keeps the exposure
+    // meter right without it, and its waits (~18 ms, ~4% of readbacks) cost a quarter of the frame rate on a Ryzen 5 5500.
+    // RX_VK_READBACK_WAIT=1: on, as upstream
     if (size) {
-        static const bool off = getenv("RX_VK_NO_READBACK_WAIT") != nullptr;
+        static const bool off = !(getenv("RX_VK_READBACK_WAIT") && atoi(getenv("RX_VK_READBACK_WAIT")) != 0) ||
+                                getenv("RX_VK_NO_READBACK_WAIT") != nullptr;
         bool ever = false;
-        if (!off && (memory_writeback_value(host->gpu_guest(gpu), size, &ever), ever)) {
+        memory_writeback_value(host->gpu_guest(gpu), size, &ever);
+        if (ever) memory_note_readback(host->gpu_guest(gpu), size);   // (the CPU may write it back: memory_rb_refresh)
+        if (!off && ever) {
             static std::atomic<int64_t> calls{0}, waited{0}, ns{0};
             const auto w0 = std::chrono::steady_clock::now();
             bool w = false;
